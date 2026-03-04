@@ -9,33 +9,36 @@ STATIC_IP = "192.168.29.198"
 # ---------------------
 
 def find_and_connect():
-    print(f"📡 Searching for {STATIC_IP} via mDNS...")
+    print(f"🔄 Resetting ADB Server to clear ghost connections...")
     try:
-        # Clear stuck connections to avoid the "already connected" loop
-        subprocess.run("adb disconnect", shell=True, capture_output=True)
-        
+        # Force a fresh start for the ADB daemon
+        subprocess.run("adb kill-server", shell=True, capture_output=True)
+        subprocess.run("adb start-server", shell=True, capture_output=True)
+        time.sleep(2) # Give the server time to wake up
+
+        print(f"📡 Searching for {STATIC_IP} via mDNS...")
+        # Search for the mDNS service name specifically
         output = subprocess.check_output("adb mdns services", shell=True).decode('utf-8')
-        match = re.search(r':(\d+)', output)
+        
+        # Regex to find the port tied to your static IP in the mDNS list
+        match = re.search(rf"{STATIC_IP}:(\d+)", output)
         
         if match:
             port = match.group(1)
             target = f"{STATIC_IP}:{port}"
             print(f"✨ Found Port! Connecting to {target}...")
-            
-            # Connect and WAIT for the handshake to finish
             subprocess.run(f"adb connect {target}", shell=True)
-            print("⏳ Waiting 5 seconds for connection to stabilize...")
-            time.sleep(5) 
+            time.sleep(2) 
             
-            # Verify if the device is actually authorized
+            # Check for authorized 'device' status
             check = subprocess.check_output("adb devices", shell=True).decode('utf-8')
-            if target in check and "unauthorized" not in check:
+            if target in check and "device" in check:
                 return target
             else:
-                print("⚠️ Device connected but UNAUTHORIZED. Check your phone screen!")
+                print("⚠️ Unauthorized or connection failed. Check phone screen!")
                 return None
         else:
-            print("❓ No mDNS service found. Toggle Wireless Debugging OFF and ON.")
+            print("❓ No mDNS service found. Try toggling Wireless Debugging OFF and ON.")
             return None
     except Exception as e:
         print(f"Discovery Error: {e}")
@@ -43,11 +46,10 @@ def find_and_connect():
 
 def get_latest_sms(device_id):
     try:
+        # Querying AdbSms via the content provider
         cmd = f'adb -s {device_id} shell "content query --uri content://adbsms/inbox --projection body:address:date --sort \'date DESC\'"'
-        # Capture errors to prevent crashing the script
         result = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode('utf-8')
         
-        # If the query returns a valid Row 0
         lines = result.strip().split('\n')
         for line in lines:
             if "Row: 0" in line:
@@ -63,20 +65,16 @@ def run_bridge():
     if not device_id:
         return
 
-    print("🚀 SMS Watchdog Active. Waiting for OTPs...")
-    
-    # Get initial state
+    print("🚀 SMS Watchdog Active. Monitoring for new OTPs...")
     last_sms = get_latest_sms(device_id)
-    if last_sms == "ERROR":
-        print("❌ Could not read SMS. Make sure AdbSms app is open and permissions are granted.")
-        return
 
     while True:
         current_sms = get_latest_sms(device_id)
         
         if current_sms == "ERROR":
-            print("🔄 Connection lost or busy. Retrying in 5s...")
-            time.sleep(5)
+            print("🔄 Connection interrupted. Attempting to reconnect...")
+            device_id = find_and_connect()
+            if not device_id: break
             continue
 
         if current_sms and current_sms != last_sms:
